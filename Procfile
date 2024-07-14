@@ -1,1 +1,1 @@
-web: python notification_endpoint.py
+web: gunicorn notification_endpoint:app
