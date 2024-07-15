@@ -19,9 +19,10 @@ def handle_notifications():
         if challenge_code:
             challenge_response = hashlib.sha256(f"{challenge_code}{VERIFICATION_TOKEN}{request.url}".encode()).hexdigest()
             return jsonify({"challengeResponse": challenge_response})
-    
+
     token = request.headers.get('Verification-Token')
     print("Headers: ", request.headers)
+    print(f"Received token: {token}")
     if token != VERIFICATION_TOKEN:
         print(f"Invalid token: {token}")
         return jsonify({'error': 'Invalid verification token'}), 403
