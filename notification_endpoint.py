@@ -4,12 +4,7 @@ import hashlib
 
 app = Flask(__name__)
 
-# Read the verification token from environment variable
 VERIFICATION_TOKEN = os.getenv("VERIFICATION_TOKEN")
-
-@app.route('/')
-def home():
-    return "Welcome to eBay Notification App!"
 
 @app.route('/ebay/notifications', methods=['GET', 'POST'])
 def handle_notifications():
@@ -17,20 +12,13 @@ def handle_notifications():
         challenge_code = request.args.get('challenge_code')
         if challenge_code:
             challenge_response = hashlib.sha256(f"{challenge_code}{VERIFICATION_TOKEN}{request.url}".encode()).hexdigest()
-            print(f"Challenge code: {challenge_code}")
-            print(f"Challenge response: {challenge_response}")
             return jsonify({"challengeResponse": challenge_response})
     
     token = request.headers.get('Verification-Token')
-    print(f"Expected token: {VERIFICATION_TOKEN}")
-    print(f"Received token: {token}")
-    
     if token != VERIFICATION_TOKEN:
-        print(f"Invalid token: {token}")
         return jsonify({'error': 'Invalid verification token'}), 403
 
     data = request.json
-    print("Received notification:", data)
     return jsonify({'status': 'success'}), 200
 
 if __name__ == '__main__':
