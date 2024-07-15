@@ -6,8 +6,9 @@ app = Flask(__name__)
 
 # Your verification token
 VERIFICATION_TOKEN = os.getenv("VERIFICATION_TOKEN")
+print(f"VERIFICATION_TOKEN: {VERIFICATION_TOKEN}")
 
-@app.route('/')
+@app.route('/', methods=['GET'])
 def home():
     return "Welcome to the eBay Notifications App!"
 
@@ -30,4 +31,4 @@ def handle_notifications():
     return jsonify({'status': 'success'}), 200
 
 if __name__ == '__main__':
-    app.run(debug=True, host='0.0.0.0', port=5001)
+    app.run(debug=True, host='0.0.0.0', port=int(os.environ.get("PORT", 5000)))
