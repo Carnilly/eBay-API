@@ -16,7 +16,10 @@ def handle_notifications():
             return jsonify({"challengeResponse": challenge_response})
     
     token = request.headers.get('Verification-Token')
+    print(f"Received Verification-Token: {token}")
+
     if token != VERIFICATION_TOKEN:
+        print(f"Invalid verification token received: {token}")
         return jsonify({'error': 'Invalid verification token'}), 403
 
     data = request.json
