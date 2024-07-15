@@ -1,5 +1,6 @@
 from flask import Flask, request, jsonify
 import hashlib
+import os
 
 app = Flask(__name__)
 
@@ -12,6 +13,10 @@ def home():
 
 @app.route('/ebay/notifications', methods=['GET', 'POST'])
 def handle_notifications():
+    print("Request method:", request.method)
+    print("Request headers:", request.headers)
+    print("Request URL:", request.url)
+    
     if request.method == 'GET':
         challenge_code = request.args.get('challenge_code')
         if challenge_code:
