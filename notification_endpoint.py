@@ -21,14 +21,13 @@ def handle_notifications():
             return jsonify({"challengeResponse": challenge_response})
 
     token = request.headers.get('Verification-Token')
-    print("Headers: ", request.headers)
-    print(f"Received token: {token}")
+    if not token:
+        token = request.headers.get('verification-token')  # Try lowercase header
+    
     if token != VERIFICATION_TOKEN:
-        print(f"Invalid token: {token}")
         return jsonify({'error': 'Invalid verification token'}), 403
 
     data = request.json
-    print("Received notification:", data)
     return jsonify({'status': 'success'}), 200
 
 if __name__ == '__main__':
