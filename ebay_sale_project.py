@@ -97,9 +97,8 @@ def process_sales_data(orders):
     df = pd.DataFrame(items)
     return df
 
-# Example usage
 year = 2024
-month = 6
+month = 7
 start_date, end_date = get_date_range(year, month)
 orders = get_sold_items(start_date, end_date)
 
