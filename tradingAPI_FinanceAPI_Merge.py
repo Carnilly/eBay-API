@@ -55,13 +55,13 @@ def get_date_range(year, month):
     start_date_utc = start_date.astimezone(pytz.utc)
     end_date_utc = end_date.astimezone(pytz.utc)
 
-    return start_date_utc.strftime('%Y-%m-%dT%H:%M:%S.000Z'), end_date_utc.strftime('%Y-%m-%dT%H:%M:%S.000Z')
+    return start_date_utc.strftime('%Y-%m-%dT%H:%M:%S.%fZ'), end_date_utc.strftime('%Y-%m-%dT%H:%M:%S.%fZ')
 
-def extract_decimal(transaction, key_path, default='0'):
-    value = transaction
+def extract_decimal(data, key_path, default='0'):
+    value = data
     for key in key_path:
         value = value.get(key, {})
-    return Decimal(value.get('value', default)).quantize(Decimal('0.1'), rounding=ROUND_HALF_UP)
+    return Decimal(value.get('value', default)).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
 
 def fetch_sold_items(start_date, end_date):
     try:
@@ -99,96 +99,84 @@ def process_sales_data(orders):
             handling_cost = extract_decimal(transaction, ['ActualHandlingCost'])
 
             sale_price = item_price + shipping_cost + sales_tax + handling_cost
-            ad_fee = (sale_price * Decimal('0.02')).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
             insertion_fee = Decimal(0.30 if sale_price <= Decimal('10.00') else 0.40).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
 
-            # Calculate single net sale value considering all fees
-            net_sale = (sale_price - sales_tax - final_value_fee - insertion_fee - shipping_cost - ad_fee).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+            # Calculate net sale without ad fee
+            net_sale_without_ad_fee = (sale_price - sales_tax - final_value_fee - insertion_fee - shipping_cost).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
 
             item = {
                 'OrderID': order['OrderID'],  # Include OrderID for matching
                 'Title': transaction['Item']['Title'],
                 'SalePrice': float(sale_price),
-                'NetSale': float(net_sale),
+                'NetSaleWithoutAdFee': float(net_sale_without_ad_fee),
+                'FinalValueFee': float(final_value_fee),
+                'InsertionFee': float(insertion_fee),
+                'ShippingCost': float(shipping_cost),
+                'HandlingCost': float(handling_cost),
+                'SalesTax': float(sales_tax),
                 'COGS': ''  # Placeholder for COGS
             }
             items.append(item)
     
     return pd.DataFrame(items)
 
-def get_promoted_listings_transactions(oauth_user_token, start_date, end_date):
-    url = 'https://apiz.ebay.com/sell/finances/v1/transaction'
+def get_finance_transactions(oauth_user_token, start_date, end_date, transaction_type, fee_type=None):
+    base_url = 'https://apiz.ebay.com/sell/finances/v1/transaction'
     headers = {
         'Authorization': f'Bearer {oauth_user_token}',
-        'Content-Type': 'application/json',
-        'X-EBAY-C-MARKETPLACE-ID': 'EBAY_US',
-        'Accept': 'application/json'
+        'Accept': 'application/json',
+        'X-EBAY-C-MARKETPLACE-ID': 'EBAY_US'
     }
     params = {
-        'limit': 100,
-        'transactionDateRange': {
-            'from': start_date,
-            'to': end_date
-        }
+        'limit': '1000',
+        'transactionDateRangeFrom': start_date,
+        'transactionDateRangeTo': end_date,
+        'transactionType': transaction_type
     }
-    all_transactions = []
+    if fee_type:
+        params['feeType'] = fee_type
 
-    while url:
+    all_transactions = []
+    url = base_url
+
+    while True:
         response = requests.get(url, headers=headers, params=params)
         if response.status_code == 200:
             data = response.json()
             all_transactions.extend(data.get('transactions', []))
-            url = data.get('next')
+            # Check for pagination
+            next_page = None
+            for link in data.get('links', []):
+                if link.get('rel') == 'next':
+                    next_page = link.get('href')
+                    break
+            if next_page:
+                url = next_page
+                params = {}  # Clear params for subsequent requests
+            else:
+                break
         else:
-            print(f"Error fetching transactions: {response.status_code} - {response.text}")
+            logging.error(f"Error fetching transactions: {response.status_code} - {response.text}")
             break
 
     return all_transactions
 
-def filter_promoted_listing_fees(transactions):
-    return [
-        tx for tx in transactions 
-        if tx.get('feeType') == 'AD_FEE' and tx.get('transactionType') == 'NON_SALE_CHARGE'
-    ]
-
-def match_orders_with_fees(trading_orders, promoted_listing_fees):
-    order_fees = {}
-
-    for index, order in trading_orders.iterrows():
-        order_id = order.get('OrderID')
-        order_fees[order_id] = {'order': order, 'fees': []}
-
-        for fee in promoted_listing_fees:
-            references = fee.get('references', [])
-            for ref in references:
-                if ref.get('referenceType') == 'ORDER_ID' and ref.get('referenceId') == order_id:
-                    order_fees[order_id]['fees'].append(fee)
-
-    return order_fees
-
-def calculate_net_profit(order_fees):
-    # Prepare a list to store the final data
-    final_data = []
-
-    for order_id, data in order_fees.items():
-        order = data['order']
-        fees = data['fees']
-
-        total_fee_amount = sum(float(fee['amount']['value']) for fee in fees)
-        order_total = float(order['SalePrice'])
-
-        net_profit = order_total - total_fee_amount
-        data['net_profit'] = net_profit
-
-        # Append the needed fields to the final data list
-        final_data.append({
-            'Title': order['Title'],
-            'SalePrice': order_total,
-            'NetSale': net_profit,
-            'COGS': ''  # Empty COGS as required
-        })
-
-    return final_data
+def get_ad_fees_dataframe(transactions):
+    ad_fees = []
+    for tx in transactions:
+        order_id = None
+        for ref in tx.get('references', []):
+            if ref.get('referenceType') == 'ORDER_ID':
+                order_id = ref.get('referenceId')
+                break
+        if order_id:
+            ad_fee = Decimal(tx.get('amount', {}).get('value', '0')).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+            ad_fees.append({
+                'OrderID': order_id,
+                'AdFee': float(ad_fee)
+            })
+    ad_fees_df = pd.DataFrame(ad_fees)
+    return ad_fees_df
 
 if __name__ == "__main__":
     year, month = prompt_for_year_and_month()
@@ -200,15 +188,25 @@ if __name__ == "__main__":
     else:
         sales_data_df = process_sales_data(orders)
         
-        transactions = get_promoted_listings_transactions(oauth_user_token, start_date, end_date)
-        if transactions:
-            promoted_listing_fees = filter_promoted_listing_fees(transactions)
-            order_fees = match_orders_with_fees(sales_data_df, promoted_listing_fees)
-            results = calculate_net_profit(order_fees)
-            
-            # Convert the final data to a DataFrame and write it to CSV
-            results_df = pd.DataFrame(results)
-            results_df.to_csv('proper_net_sale.csv', index=False)
-            print("Data written to 'proper_net_sale.csv'")
-        else:
-            print("Failed to retrieve promoted listings transactions.")
+        # Fetch ad fees
+        ad_transactions = get_finance_transactions(
+            oauth_user_token, start_date, end_date,
+            transaction_type='NON_SALE_CHARGE',
+            fee_type='AD_FEE'
+        )
+        ad_fees_df = get_ad_fees_dataframe(ad_transactions) if ad_transactions else pd.DataFrame(columns=['OrderID', 'AdFee'])
+        
+        # Merge sales data with ad fees
+        merged_df = pd.merge(sales_data_df, ad_fees_df, on='OrderID', how='left')
+        merged_df['AdFee'] = merged_df['AdFee'].fillna(0)
+        
+        # Calculate NetSale with proper rounding
+        merged_df['NetSale'] = merged_df.apply(
+            lambda row: Decimal(row['NetSaleWithoutAdFee'] - row['AdFee']).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP),
+            axis=1
+        ).astype(float)
+        
+        # Rearrange columns
+        merged_df = merged_df[['OrderID', 'Title', 'SalePrice', 'NetSale', 'COGS']]
+        merged_df.to_csv('proper_net_sale.csv', index=False)
+        print("Data written to 'proper_net_sale.csv'")

@@ -4,9 +4,9 @@ from ebaysdk.exception import ConnectionError
 import pandas as pd
 from datetime import datetime, timedelta
 from decimal import Decimal, ROUND_HALF_UP
-from dotenv import load_dotenv
 import logging
 import pytz
+from dotenv import load_dotenv
 
 
 # Set up logging configuration
