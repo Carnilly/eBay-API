@@ -92,10 +92,12 @@ def process_sales_data(orders):
     
     for order in order_array:
         order_id = order['OrderID']
+        logging.info(f"Processing OrderID: {order_id}")
         for transaction in order.get('TransactionArray', {}).get('Transaction', []):
+            transaction_id = transaction['TransactionID']
             quantity = int(transaction.get('QuantityPurchased', 1))
             item_price = extract_decimal(transaction, ['TransactionPrice'])
-
+            
             # Extract total costs and calculate per-unit values
             total_shipping_cost = extract_decimal(transaction, ['ActualShippingCost'])
             total_sales_tax = extract_decimal(transaction, ['Taxes', 'TotalTaxAmount'])
@@ -107,12 +109,11 @@ def process_sales_data(orders):
             per_unit_final_value_fee = (total_final_value_fee / quantity).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP) if quantity else Decimal('0.00')
             per_unit_handling_cost = (total_handling_cost / quantity).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP) if quantity else Decimal('0.00')
 
-            # Calculate per-unit sale price and net sale
             per_unit_sale_price = (item_price + per_unit_shipping_cost + per_unit_sales_tax + per_unit_handling_cost).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
             insertion_fee = Decimal(0.30 if per_unit_sale_price <= Decimal('10.00') else 0.40).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
             net_sale_without_ad_fee = (per_unit_sale_price - per_unit_sales_tax - per_unit_final_value_fee - insertion_fee - per_unit_shipping_cost).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
 
-            # Create a separate row for each individual item in the transaction
+            logging.debug(f"Transaction ID: {transaction_id}, OrderID: {order_id}, Quantity: {quantity}, Title: {transaction['Item']['Title']}")
             for _ in range(quantity):
                 items.append({
                     'OrderID': order_id,
@@ -124,7 +125,7 @@ def process_sales_data(orders):
                     'ShippingCost': float(per_unit_shipping_cost),
                     'HandlingCost': float(per_unit_handling_cost),
                     'SalesTax': float(per_unit_sales_tax),
-                    'COGS': ''  # Placeholder for COGS
+                    'COGS': ''
                 })
 
     return pd.DataFrame(items)
@@ -179,11 +180,16 @@ def get_ad_fees_dataframe(transactions):
                 break
         if order_id:
             ad_fee = Decimal(tx.get('amount', {}).get('value', '0')).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
-            ad_fees.append({
-                'OrderID': order_id,
-                'AdFee': float(ad_fee)
-            })
-    return pd.DataFrame(ad_fees)
+            ad_fees.append({'OrderID': order_id, 'AdFee': float(ad_fee)})
+
+    df = pd.DataFrame(ad_fees)
+    
+    if not df.empty:
+        logging.info(f"Ad Fees Before Removing Duplicates:\n{df}")
+        df = df.groupby('OrderID', as_index=False).agg({'AdFee': 'sum'})
+        logging.info(f"Ad Fees After Aggregation:\n{df}")
+
+    return df
 
 if __name__ == "__main__":
     year, month = prompt_for_year_and_month()
@@ -194,6 +200,7 @@ if __name__ == "__main__":
         logging.error("No orders retrieved.")
     else:
         sales_data_df = process_sales_data(orders)
+        logging.info(f"Sales DataFrame Before Merge:\n{sales_data_df}")
         
         ad_transactions = get_finance_transactions(
             oauth_user_token, start_date, end_date,
@@ -201,8 +208,11 @@ if __name__ == "__main__":
             fee_type='AD_FEE'
         )
         ad_fees_df = get_ad_fees_dataframe(ad_transactions) if ad_transactions else pd.DataFrame(columns=['OrderID', 'AdFee'])
+        logging.info(f"Ad Fees DataFrame Before Merge:\n{ad_fees_df}")
         
         merged_df = pd.merge(sales_data_df, ad_fees_df, on='OrderID', how='left')
+        logging.info(f"Merged DataFrame:\n{merged_df}")
+        
         merged_df['AdFee'] = merged_df['AdFee'].fillna(0)
         
         merged_df['NetSale'] = merged_df.apply(
@@ -210,7 +220,6 @@ if __name__ == "__main__":
             axis=1
         ).astype(float)
         
-        # Drop 'OrderID' from the final output
         merged_df = merged_df[['Title', 'SalePrice', 'NetSale', 'COGS']]
         merged_df.to_csv('proper_net_sale.csv', index=False)
         print("Data written to 'proper_net_sale.csv'")
