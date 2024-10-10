@@ -91,33 +91,42 @@ def process_sales_data(orders):
     items = []
     
     for order in order_array:
+        order_id = order['OrderID']
         for transaction in order.get('TransactionArray', {}).get('Transaction', []):
+            quantity = int(transaction.get('QuantityPurchased', 1))
             item_price = extract_decimal(transaction, ['TransactionPrice'])
-            shipping_cost = extract_decimal(transaction, ['ActualShippingCost'])
-            sales_tax = extract_decimal(transaction, ['Taxes', 'TotalTaxAmount'])
-            final_value_fee = extract_decimal(transaction, ['FinalValueFee'])
-            handling_cost = extract_decimal(transaction, ['ActualHandlingCost'])
 
-            sale_price = item_price + shipping_cost + sales_tax + handling_cost
-            insertion_fee = Decimal(0.30 if sale_price <= Decimal('10.00') else 0.40).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+            # Extract total costs and calculate per-unit values
+            total_shipping_cost = extract_decimal(transaction, ['ActualShippingCost'])
+            total_sales_tax = extract_decimal(transaction, ['Taxes', 'TotalTaxAmount'])
+            total_final_value_fee = extract_decimal(transaction, ['FinalValueFee'])
+            total_handling_cost = extract_decimal(transaction, ['ActualHandlingCost'])
 
-            # Calculate net sale without ad fee
-            net_sale_without_ad_fee = (sale_price - sales_tax - final_value_fee - insertion_fee - shipping_cost).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+            per_unit_shipping_cost = (total_shipping_cost / quantity).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP) if quantity else Decimal('0.00')
+            per_unit_sales_tax = (total_sales_tax / quantity).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP) if quantity else Decimal('0.00')
+            per_unit_final_value_fee = (total_final_value_fee / quantity).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP) if quantity else Decimal('0.00')
+            per_unit_handling_cost = (total_handling_cost / quantity).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP) if quantity else Decimal('0.00')
 
-            item = {
-                'OrderID': order['OrderID'],  # Include OrderID for matching
-                'Title': transaction['Item']['Title'],
-                'SalePrice': float(sale_price),
-                'NetSaleWithoutAdFee': float(net_sale_without_ad_fee),
-                'FinalValueFee': float(final_value_fee),
-                'InsertionFee': float(insertion_fee),
-                'ShippingCost': float(shipping_cost),
-                'HandlingCost': float(handling_cost),
-                'SalesTax': float(sales_tax),
-                'COGS': ''  # Placeholder for COGS
-            }
-            items.append(item)
-    
+            # Calculate per-unit sale price and net sale
+            per_unit_sale_price = (item_price + per_unit_shipping_cost + per_unit_sales_tax + per_unit_handling_cost).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+            insertion_fee = Decimal(0.30 if per_unit_sale_price <= Decimal('10.00') else 0.40).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+            net_sale_without_ad_fee = (per_unit_sale_price - per_unit_sales_tax - per_unit_final_value_fee - insertion_fee - per_unit_shipping_cost).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP)
+
+            # Create a separate row for each individual item in the transaction
+            for _ in range(quantity):
+                items.append({
+                    'OrderID': order_id,
+                    'Title': transaction['Item']['Title'],
+                    'SalePrice': float(per_unit_sale_price),
+                    'NetSaleWithoutAdFee': float(net_sale_without_ad_fee),
+                    'FinalValueFee': float(per_unit_final_value_fee),
+                    'InsertionFee': float(insertion_fee),
+                    'ShippingCost': float(per_unit_shipping_cost),
+                    'HandlingCost': float(per_unit_handling_cost),
+                    'SalesTax': float(per_unit_sales_tax),
+                    'COGS': ''  # Placeholder for COGS
+                })
+
     return pd.DataFrame(items)
 
 def get_finance_transactions(oauth_user_token, start_date, end_date, transaction_type, fee_type=None):
@@ -144,7 +153,6 @@ def get_finance_transactions(oauth_user_token, start_date, end_date, transaction
         if response.status_code == 200:
             data = response.json()
             all_transactions.extend(data.get('transactions', []))
-            # Check for pagination
             next_page = None
             for link in data.get('links', []):
                 if link.get('rel') == 'next':
@@ -152,7 +160,7 @@ def get_finance_transactions(oauth_user_token, start_date, end_date, transaction
                     break
             if next_page:
                 url = next_page
-                params = {}  # Clear params for subsequent requests
+                params = {}
             else:
                 break
         else:
@@ -175,8 +183,7 @@ def get_ad_fees_dataframe(transactions):
                 'OrderID': order_id,
                 'AdFee': float(ad_fee)
             })
-    ad_fees_df = pd.DataFrame(ad_fees)
-    return ad_fees_df
+    return pd.DataFrame(ad_fees)
 
 if __name__ == "__main__":
     year, month = prompt_for_year_and_month()
@@ -188,7 +195,6 @@ if __name__ == "__main__":
     else:
         sales_data_df = process_sales_data(orders)
         
-        # Fetch ad fees
         ad_transactions = get_finance_transactions(
             oauth_user_token, start_date, end_date,
             transaction_type='NON_SALE_CHARGE',
@@ -196,17 +202,15 @@ if __name__ == "__main__":
         )
         ad_fees_df = get_ad_fees_dataframe(ad_transactions) if ad_transactions else pd.DataFrame(columns=['OrderID', 'AdFee'])
         
-        # Merge sales data with ad fees
         merged_df = pd.merge(sales_data_df, ad_fees_df, on='OrderID', how='left')
         merged_df['AdFee'] = merged_df['AdFee'].fillna(0)
         
-        # Calculate NetSale with proper rounding
         merged_df['NetSale'] = merged_df.apply(
             lambda row: Decimal(row['NetSaleWithoutAdFee'] - row['AdFee']).quantize(Decimal('0.01'), rounding=ROUND_HALF_UP),
             axis=1
         ).astype(float)
         
-        # Rearrange columns
-        merged_df = merged_df[['OrderID', 'Title', 'SalePrice', 'NetSale', 'COGS']]
+        # Drop 'OrderID' from the final output
+        merged_df = merged_df[['Title', 'SalePrice', 'NetSale', 'COGS']]
         merged_df.to_csv('proper_net_sale.csv', index=False)
         print("Data written to 'proper_net_sale.csv'")
